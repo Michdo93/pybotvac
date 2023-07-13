@@ -4,6 +4,9 @@ import logging
 import re
 from datetime import datetime, timezone
 from email.utils import format_datetime
+import websocket
+import json
+import time
 
 import requests
 import urllib3
@@ -329,6 +332,68 @@ class Robot:
 
     def stop_cleaning(self):
         return self._message({"reqId": "1", "cmd": "stopCleaning"}, STATE_SCHEMA)
+
+    def get_manual_cleaning_info(self):
+        return self._message({"reqId": "77", "cmd": "getRobotManualCleaningInfo"}, STATE_SCHEMA)
+
+    def manual_cleaning(self, command):
+        """
+        Drive the robot manually using WebSocket.
+
+        :param command: Command for manual cleaning (forward, back, arc-left, arc-right, pivot-left, pivot-right, stop)
+        """
+        # Request manual cleaning permission
+        request_response = self.get_manual_cleaning_info()
+        if request_response.status_code != 200:
+            raise Exception("Failed to request manual cleaning permission")
+
+        # Get robot's IP address, port, and SSID
+        info_response = self.get_manual_cleaning_info().json()
+
+        print(info_response['data'])
+
+        ip_address = info_response['data']['ip_address']
+        port = info_response['data']['port']
+
+        # Open WebSocket connection
+        ws_url = f"ws://{ip_address}:{port}/drive"
+
+        # Authentication headers
+        robot_serial_lower = self.serial.lower()
+        current_date = datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        string_to_sign = f"{robot_serial_lower}\n{current_date}\n"
+        signature = hmac.new(self.secret.encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+        authorization_header = f"NEATOAPP {signature}"
+
+        headers = {
+            'Host': 'drive.neatocloud.com',
+            'Date': current_date,
+            'Authorization': authorization_header,
+            'Upgrade': 'websocket',
+            'Connection': 'Upgrade',
+            'Sec-WebSocket-Key': 'x3JJHMbDL1EzLkh9GBhXDw==',
+            'Sec-WebSocket-Protocol': 'chat, superchat',
+            'Sec-WebSocket-Version': '13',
+            'Origin': 'http://neatocloud.com'
+        }
+
+        ws = websocket.create_connection(ws_url, header=headers)
+
+        # Send manual cleaning command
+        combo = { "combo": command }
+        ws.send(json.dumps(combo))
+
+        result = ws.recv()
+        response = json.loads(result)
+        if 'result' in response:
+            print('Result:', response['result'])
+        if 'alert' in response:
+            print('Alert:', response['alert'])
+
+        time.sleep(30)
+
+        # Close the WebSocket connection
+        ws.close()
 
     def send_to_base(self):
         return self._message({"reqId": "1", "cmd": "sendToBase"}, STATE_SCHEMA)
